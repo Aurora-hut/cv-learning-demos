@@ -5,6 +5,9 @@ models/*.onnx
 _tmp*
 _tmp_in.*
 
+# 摄像头快照（可能含人脸，不入库）
+cam_snapshot*.jpg
+
 # Python 缓存
 __pycache__/
 *.pyc
