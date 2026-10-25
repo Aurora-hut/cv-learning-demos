@@ -80,8 +80,13 @@ def letterbox(img, size=INPUT_SIZE, color=(114, 114, 114)):
     return canvas, r, dw, dh
 
 
-def detect(net, frame):
-    """返回 (画好框的画面, [(类别名, 置信度, (x1,y1,x2,y2)), ...])。"""
+def detect(net, frame, conf=None):
+    """返回 (画好框的画面, [(类别名, 置信度, (x1,y1,x2,y2)), ...])。
+
+    conf 可临时覆盖置信度阈值（默认用 CONF_THRESHOLD=0.25）。
+    调低能看到更多"模型看到了但没敢确认"的目标，代价是误检变多。
+    """
+    th = CONF_THRESHOLD if conf is None else conf
     h, w = frame.shape[:2]
     img, r, dw, dh = letterbox(frame)
     blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (INPUT_SIZE, INPUT_SIZE), swapRB=True)
@@ -92,7 +97,7 @@ def detect(net, frame):
     scores = pred[:, 4:]         # 80 类概率
     class_ids = scores.argmax(1)
     confs = scores[np.arange(len(scores)), class_ids]
-    keep = confs > CONF_THRESHOLD
+    keep = confs > th
     boxes_c, class_ids, confs = boxes_c[keep], class_ids[keep], confs[keep]
 
     out = frame.copy()
@@ -114,7 +119,7 @@ def detect(net, frame):
         idxs = cv2.dnn.NMSBoxes(
             [[float(x), float(y), float(x2 - x), float(y2 - y)]
              for x, y, x2, y2 in xyxy],
-            [float(c) for c in confs], CONF_THRESHOLD, NMS_THRESHOLD)
+            [float(c) for c in confs], th, NMS_THRESHOLD)
         if len(idxs) > 0:
             for i in np.array(idxs).flatten():
                 x1, y1, x2, y2 = xyxy[i].astype(int)
@@ -130,12 +135,22 @@ def detect(net, frame):
 
 
 def main():
+    global MODEL
     args = sys.argv[1:]
     image_path = None
+    conf = None
     i = 0
     while i < len(args):
         if args[i] == "--image" and i + 1 < len(args):
             image_path = os.path.abspath(args[i + 1]); i += 2
+        elif args[i] == "--conf" and i + 1 < len(args):
+            try:
+                conf = float(args[i + 1])
+            except ValueError:
+                print("--conf 要填数字（例如 0.1），已忽略")
+            i += 2
+        elif args[i] == "--model" and i + 1 < len(args):
+            MODEL = args[i + 1]; i += 2
         else:
             i += 1
 
@@ -144,19 +159,21 @@ def main():
     net = load_net()
     if net is None:
         return
+    th = CONF_THRESHOLD if conf is None else conf
+    print("模型：%s ｜ 置信度阈值：%.2f" % (MODEL, th))
 
     if image_path:
         img = imread_u(image_path)
         if img is None:
             print("读不到图片：", image_path); return
-        out, results = detect(net, img)
+        out, results = detect(net, img, th)
         imwrite_u("demo3_out.jpg", out)
         if results:
             print("检测到 %d 个目标：" % len(results))
-            for name, conf, box in results:
-                print("  - %-14s 置信度 %.2f  框 %s" % (name, conf, box))
+            for name, c, box in results:
+                print("  - %-14s 置信度 %.2f  框 %s" % (name, c, box))
         else:
-            print("没检测到目标（可换张图，或把 CONF_THRESHOLD 调低）")
+            print("没检测到目标（可换张图，或 --conf 0.05 再试）")
         print("已保存 demo3_out.jpg")
         return
 
@@ -164,15 +181,22 @@ def main():
     if not cap.isOpened():
         print("打不开摄像头。可先用图片模式：python demo3_detect.py --image 你的图.jpg")
         return
-    print("摄像头已打开，实时检测中；按 q 退出")
+    print("摄像头已打开：按 s 存快照（cam_snapshot.jpg），按 q 退出")
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        out, results = detect(net, frame)
-        cv2.imshow("YOLO26 object detection (q to quit)", out)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        out, results = detect(net, frame, th)
+        cv2.putText(out, "conf>%.2f  n=%d  [s]save [q]quit" % (th, len(results)),
+                    (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.imshow("YOLO26 object detection (s save / q quit)", out)
+        k = cv2.waitKey(1) & 0xFF
+        if k == ord("q"):
             break
+        if k == ord("s"):
+            imwrite_u("cam_snapshot.jpg", out)
+            print("已保存 cam_snapshot.jpg，本帧检出 %d 个：%s"
+                  % (len(results), [(n, round(c, 2)) for n, c, _ in results]))
     cap.release()
     cv2.destroyAllWindows()
 

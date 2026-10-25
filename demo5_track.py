@@ -67,7 +67,7 @@ def track_points(prev_gray, gray, pts):
     return new.reshape(-1, 1, 2), float(np.median(d[:, 0])), float(np.median(d[:, 1]))
 
 
-def run(img, net, gray_prev, target, fps_text, every, target_class):
+def run(img, net, gray_prev, target, fps_text, every, target_class, conf=None):
     """处理一帧。target 是跨帧状态字典。"""
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -81,7 +81,7 @@ def run(img, net, gray_prev, target, fps_text, every, target_class):
     if need_detect:
         # ---- ① 检测帧：跑 YOLO，顺便重新采特征点 ----
         # 注意用 d3.detect 返回的 results，但画面用干净的 img（只画锁定目标，不画全部检测框）
-        _, results = d3.detect(net, img)
+        _, results = d3.detect(net, img, conf)
         t = pick_target(results, w, h, target_class)
         target["since"] = 0
         if t is None:
@@ -131,15 +131,21 @@ def run(img, net, gray_prev, target, fps_text, every, target_class):
 
 
 def parse_args(argv):
-    a = {"video": None, "target": None, "every": DETECT_EVERY}
+    a = {"video": None, "target": None, "every": DETECT_EVERY, "conf": None, "model": None}
     i = 0
     while i < len(argv):
         k = argv[i]
-        if k in ("--video", "--target") and i + 1 < len(argv):
+        if k in ("--video", "--target", "--model") and i + 1 < len(argv):
             a[k[2:]] = argv[i + 1]; i += 2
         elif k == "--every" and i + 1 < len(argv):
             try:
                 a["every"] = max(1, int(argv[i + 1]))
+            except ValueError:
+                pass
+            i += 2
+        elif k == "--conf" and i + 1 < len(argv):
+            try:
+                a["conf"] = float(argv[i + 1])
             except ValueError:
                 pass
             i += 2
@@ -151,9 +157,13 @@ def parse_args(argv):
 def main():
     args = parse_args(sys.argv[1:])
     os.chdir(BASE)
+    if args["model"]:
+        d3.MODEL = args["model"]
     net = d3.load_net()
     if net is None:
         return
+    print("模型：%s ｜ 置信度阈值：%s ｜ 检测间隔：%d 帧"
+          % (d3.MODEL, "默认(0.25)" if args["conf"] is None else "%.2f" % args["conf"], args["every"]))
 
     # ---- 视频模式：统计 纯检测 vs 检测+跟踪 的耗时 ----
     if args["video"]:
@@ -180,7 +190,8 @@ def main():
             if not ok:
                 break
             t0 = time.time()
-            out, gray = run(img, net, gray_prev, target, "", args["every"], args["target"])
+            out, gray = run(img, net, gray_prev, target, "", args["every"],
+                            args["target"], args["conf"])
             t_all += time.time() - t0
             if target["since"] == 0:
                 det_frames += 1
@@ -217,7 +228,8 @@ def main():
         now = time.time()
         fps = 0.9 * fps + 0.1 / max(now - last, 1e-6)
         last = now
-        out, gray = run(img, net, gray_prev, target, "FPS %.1f" % fps, args["every"], args["target"])
+        out, gray = run(img, net, gray_prev, target, "FPS %.1f" % fps,
+                        args["every"], args["target"], args["conf"])
         gray_prev = gray
         cv2.imshow("detect + optical-flow tracking (q to quit)", out)
         if cv2.waitKey(1) & 0xFF == ord("q"):

@@ -16,7 +16,7 @@
 | Python | 3.13.12（**注意**：本机 `python` 指向 Anaconda 3.7，跑不了；需用完整路径调 3.13.12） |
 | OpenCV | 5.0.0.93 |
 | numpy | 2.5.4 |
-| 模型 | YOLO26n (ONNX)，10 MB，COCO 80 类 |
+| 模型 | YOLO26n（10 MB，默认，快）/ YOLO26s（38 MB，更准），ONNX，COCO 80 类 |
 
 安装依赖：
 
@@ -28,8 +28,12 @@ pip install opencv-python numpy
 
 ```bash
 mkdir -p models
+# 小模型（默认，快）
 curl -L -o models/yolo26n.onnx \
   "https://hf-mirror.com/unileon-robotics/YOLO26-ONNX/resolve/main/dynamic/yolo26n.onnx"
+# 更大更准的版本（可选）
+curl -L -o models/yolo26s.onnx \
+  "https://hf-mirror.com/unileon-robotics/YOLO26-ONNX/resolve/main/dynamic/yolo26s.onnx"
 ```
 
 ---
@@ -52,7 +56,23 @@ python demo4_aim.py --video 视频.mp4     # 视频，输出 demo4_out.mp4
 python demo4_aim.py                      # 摄像头实时，按 q 退出
 ```
 
-Windows 上也可直接双击 `运行demo1.bat` ~ `运行demo4.bat`（内容为纯英文，避免 GBK 乱码）。
+Windows 上也可直接双击 `运行demo1.bat` ~ `运行demo5.bat`（内容为纯英文，避免 GBK 乱码）。
+
+---
+
+## 效果
+
+| ① 边缘检测 | ② 颜色追踪 |
+|---|---|
+| ![](docs/demo1_edge.jpg) | ![](docs/demo2_color.jpg) |
+
+| ③ YOLO26s 目标检测 | ④ 目标锁定与偏移量 |
+|---|---|
+| ![](docs/demo3_detect.jpg) | ![](docs/demo4_aim.gif) |
+
+⑤ 检测 + 光流跟踪（绿框＝跟踪中，红框＝刚检测校正，白准星＝画面中心，橙点＝瞄准点）：
+
+![](docs/demo5_track.gif)
 
 ---
 
@@ -101,6 +121,35 @@ python demo5_track.py --every 20                        # 检测更稀、更快�
 
 ---
 
+## 为什么"识别不到手机"？（模型能力边界）
+
+`yolo26n` / `yolo26s` 都只在 **COCO 80 类**上训练，边界是硬的：
+
+- 只认这 80 类，超出的物体不会被"创造"出来，只会被硬塞成最像的类，或者直接漏掉
+- `cell phone` 是第 67 类，但训练样本多是"手持远处的小手机"。把手机怼到镜头前（占画面很大、
+  只露出背面、或屏幕反光一片白）属于**域偏移**，模型大概率认不出
+- 置信度低于阈值就被过滤：默认 0.25 会砍掉大量"看到了但不敢确认"的候选
+
+排查顺序（从便宜到贵）：
+
+1. **先确认摄像头管线没问题**：举远一点、正常光线，看能否稳定检出 `person`。
+   连人都检不到，就是光线/距离/遮挡的问题，不是模型的锅。
+2. **降阈值看候选**：`--conf 0.05`。屏幕上能出现框，说明模型有感觉，只是分数低。
+3. **换更大模型**：`--model models/yolo26s.onnx`（38 MB）。同一张图上置信度 0.73~0.87，
+   且不再出现 n 版 `sports ball` 那种误检。
+4. **实在认不出 → 只能微调**：用自己的数据重训（要 PyTorch + 数据集，几十 GB 级下载），
+   或者换思路（模板匹配、颜色 + 形状规则）。
+
+> 降阈值不是免费的：候选框变多、NMS 变慢。同一段视频实测 `conf=0.25` 约 65 FPS，`conf=0.1` 掉到 26 FPS。
+
+诊断命令（摄像头模式，按 `s` 存 `cam_snapshot.jpg`，按 `q` 退出）：
+
+```bash
+python demo3_detect.py --conf 0.05 --model models/yolo26s.onnx
+```
+
+---
+
 ## 踩过的坑（OpenCV 5.0 / Windows）
 
 1. **OpenCV 5.0 移除了 Caffe 读取器**，`readNetFromCaffe` 不存在 → 模型只能走 ONNX。
@@ -123,5 +172,6 @@ python demo5_track.py --every 20                        # 检测更稀、更快�
 ├── 生成测试图.py           生成 demo1 测试图
 ├── 运行demo1~5.bat         一键运行（纯英文）
 ├── models/                模型目录（.onnx 不入库）
+├── docs/                  README 用的截图与 GIF
 └── *_out.jpg / demo4_out.mp4   各 demo 实测输出
 ```
