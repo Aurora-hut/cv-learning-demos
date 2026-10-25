@@ -42,6 +42,7 @@ curl -L -o models/yolo26n.onnx \
 | 2 | `demo2_color_track.py` | HSV 颜色阈值追踪目标 | 转 HSV 抗光照、取最大轮廓、算中心坐标 |
 | 3 | `demo3_detect.py` | YOLO26n 目标检测 | OpenCV DNN 跑 ONNX，不依赖 PyTorch；letterbox + NMS |
 | 4 | `demo4_aim.py` | 目标锁定 + 自瞄偏移量 | 选目标打分、算 dx/dy、速度预判补偿延迟 |
+| 5 | `demo5_track.py` | 检测 + 光流跟踪分离 | 隔 N 帧检测一次，中间 Lucas-Kanade 光流跟着走，帧率提升约 10 倍 |
 
 运行方式（三种模式通用）：
 
@@ -75,6 +76,31 @@ python demo4_aim.py --video demo4_pan.mp4 --smooth 0.4 --lead 0.8
 
 ---
 
+## demo5：检测 + 跟踪分离（帧率提升约 10 倍）
+
+每帧都跑神经网络太慢。做法是**隔 N 帧检测一次**做校正，中间用 **Lucas-Kanade 光流**
+跟踪目标框内的特征点，取位移中位数来平移框；有效点太少或框出画面就强制重新检测。
+这也是 RM 队伍的标准套路（检测几 Hz + 跟踪几十 Hz）。
+
+同一段 80 帧视频（`demo5_clip.mp4`，800×450）实测：
+
+| 方案 | 平均耗时/帧 | 有效帧率 |
+|---|---|---|
+| 每帧都检测（demo4） | 161 ms | 6.2 FPS |
+| 检测每 10 帧 + 光流跟踪（demo5） | 15 ms | **64.6 ~ 68.7 FPS** |
+
+跟踪精度（只在首次检测后纯跟踪、不重检，与理论位移对比）：**40 帧累计偏差 ≤ 2 px**。
+
+```bash
+python demo5_track.py --video demo5_clip.mp4          # 绿框=跟踪中，红框=刚检测校正
+python demo5_track.py                                  # 摄像头实时，按 q 退出
+python demo5_track.py --every 20                        # 检测更稀、更快，但更容易飘
+```
+
+> 注意：`--every` 越大越快，但目标形变/遮挡时更容易跟丢。跟丢会自动触发重检。
+
+---
+
 ## 踩过的坑（OpenCV 5.0 / Windows）
 
 1. **OpenCV 5.0 移除了 Caffe 读取器**，`readNetFromCaffe` 不存在 → 模型只能走 ONNX。
@@ -92,9 +118,10 @@ python demo4_aim.py --video demo4_pan.mp4 --smooth 0.4 --lead 0.8
 ├── demo2_color_track.py   颜色追踪
 ├── demo3_detect.py        YOLO26n 目标检测
 ├── demo4_aim.py           目标锁定 + 自瞄偏移（复用 demo3）
+├── demo5_track.py         检测 + 光流跟踪分离
 ├── gen_test2.py           生成 demo2 测试图
 ├── 生成测试图.py           生成 demo1 测试图
-├── 运行demo1~4.bat         一键运行（纯英文）
+├── 运行demo1~5.bat         一键运行（纯英文）
 ├── models/                模型目录（.onnx 不入库）
 └── *_out.jpg / demo4_out.mp4   各 demo 实测输出
 ```
