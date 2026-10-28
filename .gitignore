@@ -16,3 +16,9 @@ __pycache__/
 *.exe
 *.o
 *.obj
+
+# demo6 摄像头快照（可能含人脸，不入库）
+demo6_snapshot*.jpg
+
+# demo6 自测输出（每次跑都会重新生成）
+docs/demo6/
