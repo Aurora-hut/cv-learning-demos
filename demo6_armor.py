@@ -46,7 +46,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 # ----------------------------------------------------------------------------
 # 关键参数（想调效果基本只动这几个）
 # ----------------------------------------------------------------------------
-DEFAULT_THRS = (190, 165, 140, 115, 90)   # 亮度阈值，从高往低试，取整体最优（不是第一个出结果的）
+DEFAULT_THRS = (190, 150, 110)   # 亮度阈值，从高往低试，取整体最优（不是第一个出结果的）
 MIN_ASPECT = 2.0        # 长宽比下限（灯条长/宽，真实约 4~8；方块干扰就靠它挡）
 MAX_ASPECT = 14.0       # 长宽比上限
 MIN_FILL = 0.42         # 填充率下限（轮廓面积 / 外接矩形面积，实心灯条接近 1）
@@ -54,6 +54,7 @@ MAX_TILT = 42.0         # 倾角绝对值上限（度），0 = 完全竖直
 COLOR_DIFF = 45          # 通道差阈值：B-max(R,G) > 45 判为蓝色灯条，红反之
 MIN_AREA_RATIO = 0.00004  # 面积下限（占全图比例）
 MAX_AREA_RATIO = 0.06     # 面积上限
+MAX_BARS = 14             # 候选灯条数量上限（配对是 O(n^2)，必须封顶）
 
 
 # ----------------------------------------------------------------------------
@@ -112,14 +113,19 @@ def find_bars(mask, min_fill=MIN_FILL):
         # 用 boxPoints 反推长边方向也会被 w/h 的先后顺序坑到（-90 度就翻车）。
         # 轮廓点云的协方差主轴只跟形状本身有关，换版本也不会变。
         pts = c.reshape(-1, 2).astype(np.float32)
-        if len(pts) < 5:
+        # 注意是 < 4 不是 < 5：CHAIN_APPROX_SIMPLE 会把一个小灯条的轮廓直接压成 4 个角点，
+        # 写成 < 5 就会把"远处的小目标"整类丢掉（这个坑实际踩过，端到端一测才发现）。
+        if len(pts) < 4:
             continue
         d = pts - pts.mean(axis=0)
-        cov = (d.T @ d) / max(1, len(d) - 1)
-        eig_val, eig_vec = np.linalg.eigh(cov)
-        axis = eig_vec[:, int(np.argmax(eig_val))]        # 单位向量，指向长边
+        a = float((d[:, 0] * d[:, 0]).sum())
+        b = float((d[:, 0] * d[:, 1]).sum())
+        c = float((d[:, 1] * d[:, 1]).sum())
+        # 2x2 协方差主轴有解析解，比 eigh 快一个数量级，4 点矩形也完全稳
+        theta = 0.5 * math.atan2(2.0 * b, a - c)
+        ax, ay = math.cos(theta), math.sin(theta)         # 单位向量，指向长边
         # 0 度 = 竖直向上，正值 = 上端向右倒
-        tilt = math.degrees(math.atan2(float(axis[0]), float(-axis[1])))
+        tilt = math.degrees(math.atan2(ax, -ay))
         tilt = (tilt + 90.0) % 180.0 - 90.0
         if abs(tilt) > MAX_TILT:
             continue
@@ -132,6 +138,12 @@ def find_bars(mask, min_fill=MIN_FILL):
             "area": float(area),
             "pts": cv2.boxPoints(rect).astype(np.float32),
         })
+
+    # 只留最像灯条的若干条：真实画面里灯条不会超过十几根，
+    # 把候选池压住，配对那层 O(n^2) 才不会因为一堆噪点小亮块而变慢。
+    if len(bars) > MAX_BARS:
+        bars.sort(key=lambda x: -x["h"])
+        bars = bars[:MAX_BARS]
     return bars
 
 
@@ -225,12 +237,16 @@ def color_masks(blurred, thr_col=COLOR_DIFF):
     比白墙还暗，灰度阈值根本抓不到它，只会抓到灯条正中那一小条过曝白芯。
     通道差对"纯色 + 高饱和"特别敏感，而场地背景几乎不会这么纯。
     """
-    bi = blurred[:, :, 0].astype(np.int16)
-    gi = blurred[:, :, 1].astype(np.int16)
-    ri = blurred[:, :, 2].astype(np.int16)
-    blue = (bi - np.maximum(gi, ri)) > thr_col
-    red = (ri - np.maximum(gi, bi)) > thr_col
-    return ((blue | red).astype(np.uint8)) * 255
+    b, g, r = cv2.split(blurred)
+    # 用 cv2.subtract 做饱和相减（负数自动截到 0），cv2.max 逐像素取大，全是 C 实现。
+    # 早先用 numpy 转 int16 再比，单这一步就吃掉 18 ms —— 整个 detect 才 25 ms。
+    gr = cv2.max(g, r)
+    bg = cv2.max(b, g)
+    blue = cv2.subtract(b, gr)          # 蓝通道比另两个都高多少
+    red = cv2.subtract(r, bg)           # 红通道比另两个都高多少
+    diff = cv2.max(blue, red)
+    _, mask = cv2.threshold(diff, thr_col, 255, cv2.THRESH_BINARY)
+    return mask
 
 
 def detect_armors(frame, thr=None, min_fill=MIN_FILL, thr_col=COLOR_DIFF):
@@ -260,8 +276,10 @@ def detect_armors(frame, thr=None, min_fill=MIN_FILL, thr_col=COLOR_DIFF):
         if sc > best_score:
             best_score = sc
             best = (armors, bars, mask, t)
-        if armors and orphan <= 1 and len(armors) >= len(best[0]):
-            break                                  # 灯条基本都成对了，不必再降阈值
+        # 提前收手：只要大部分灯条都成对了就停，不必为了几根噪点小亮条把 5 档阈值全跑完。
+        # 早先写成 orphan <= 1，小目标放行之后噪点变多、条件几乎永不满足，白白多跑 3~4 轮。
+        if armors and orphan <= max(2, len(bars) // 3) and len(armors) >= len(best[0]):
+            break
     return best
 
 

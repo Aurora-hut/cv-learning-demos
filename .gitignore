@@ -22,3 +22,10 @@ demo6_snapshot*.jpg
 
 # demo6 自测输出（每次跑都会重新生成）
 docs/demo6/
+
+# demo7 摄像头快照 + 个人标定结果（跟机器/镜头绑定，不入库）
+demo7_snapshot*.jpg
+camera.json
+
+# demo7 调试用临时裁图
+docs/demo7/
