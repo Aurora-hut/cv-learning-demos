@@ -1,9 +1,10 @@
 # 视觉学习 Demo 集 · RM 视觉组独立路线
 
-四个从零跑通的计算机视觉 demo，按「边缘 → 颜色 → 检测 → 自瞄」递进。
+从零跑通的计算机视觉 demo，按「边缘 → 颜色 → 检测 → 自瞄 → 跟踪」递进，另含一个 C++ 同功能对照。
 面向 RoboMaster 视觉/算法组的核心能力，也适合作为 CV 方向的作品集第 0 件。
 
 - 作者：王思茹（中山大学 · 人工智能学院 26 级）
+- 仓库：https://github.com/Aurora-hut/cv-learning-demos
 - 说明：代码由 AI 协作生成，本人在本机实际运行并验收；文中所有数字均为本机实测。
 
 ---
@@ -163,12 +164,49 @@ python demo3_detect.py --conf 0.05 --model models/yolo26s.onnx
 
 ---
 
+## C++ 版：工具链与「到底快多少」
+
+`cpp/` 里是 `demo1_cpp.cpp`，和 Python 版 demo1 做同一件事（灰度 + Canny，输出三连图），用来打通 C++ 工具链并做语言对照。
+
+### 环境（已装好）
+
+| 项目 | 位置 / 版本 |
+|---|---|
+| MSYS2 | `D:\msys64`（装在 D 盘，不需要管理员权限） |
+| 编译器 | `ucrt64\bin\g++.exe` — GCC **16.2.0** |
+| OpenCV | **5.0.0**（`pacman -S mingw-w64-ucrt-x86_64-opencv`） |
+| 头文件 / 包名 | `include/opencv5/opencv2/`，pkg-config 包名是 **`opencv5`**（不是 opencv4） |
+
+编译运行：双击 `cpp/build.bat`（内部用 `pkg-config` 自动取编译参数，优先 `opencv5`、回退 `opencv4`）。
+
+### 实测对比（同一张 640×360 图）
+
+| 写法 | 耗时 | 相对 |
+|---|---|---|
+| Python 调 OpenCV 函数（`cvtColor` + `Canny`） | 3.49 ms/帧 | 基准 |
+| C++ 调同样的 OpenCV 函数 | 5.59 ~ 7.97 ms/帧 | 反而略慢 |
+| Python 纯 for 循环逐像素统计 | 38.29 ms/帧 | — |
+| **C++ 手写逐像素统计** | **0.21 ms/帧** | **约 182 倍** |
+
+**结论（重要，别被"换 C++ 就更快"误导）：**
+
+- 调 OpenCV 函数时，真正干活的是库内部的 C++，跟你用什么语言写调用**无关**。
+  这里 C++ 反而慢一点，是因为两套 OpenCV 的构建配置不同——pip 的 wheel 与 MSYS2 的打包优化项不一致，
+  实测两者都启用了 TBB + OpenCL、8 线程，属同一量级。
+- C++ 真正拉开差距的地方是**你自己写循环**：0.21 ms vs 38.29 ms。
+  RM 视觉里大量自定义处理（灯条扫描、二值化、连通域筛选）正是这种活，这才是队伍用 C++ 的原因。
+
+---
+
 ## 踩过的坑（OpenCV 5.0 / Windows）
 
 1. **OpenCV 5.0 移除了 Caffe 读取器**，`readNetFromCaffe` 不存在 → 模型只能走 ONNX。
 2. **OpenCV 5.0 打不开含中文的绝对路径**的文件 → 先 `os.chdir` 到脚本目录用相对路径；图片读写用 `np.fromfile + imdecode`、`imencode + tofile`。
 3. **`.bat` 里不能写中文**：cmd 按 GBK 解码 UTF-8 会把命令拆碎（报 `'?..' 不是内部或外部命令`）→ bat 一律纯英文 + `cd /d "%~dp0"`。
 4. **GitHub 直连不通时**，模型可从 `hf-mirror.com` 拉取；`raw.githubusercontent.com` 与 Git LFS 均不可用。
+5. **MSYS2 首次装包会卡在 PGP 公钥提示**：`pacman -Sy --noconfirm` 管不到密钥环那一步，表现为"假死"；
+   而 `pacman-key --init` 在本机还会陷入 `gpg: lockfile disappeared` 死循环
+   → 绕法是把 `etc/pacman.conf` 的 `SigLevel` 临时改为 `Never`（包仍走 HTTPS 清华源）。
 
 ---
 
@@ -181,6 +219,9 @@ python demo3_detect.py --conf 0.05 --model models/yolo26s.onnx
 ├── demo3_detect.py        YOLO26n 目标检测
 ├── demo4_aim.py           目标锁定 + 自瞄偏移（复用 demo3）
 ├── demo5_track.py         检测 + 光流跟踪分离
+├── cpp/                   C++ 版同功能对照
+│   ├── demo1_cpp.cpp
+│   └── build.bat          一键编译运行（pkg-config 自动取参数）
 ├── gen_test2.py           生成 demo2 测试图
 ├── 生成测试图.py           生成 demo1 测试图
 ├── 运行demo1~5.bat         一键运行（纯英文）
