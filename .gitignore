@@ -11,3 +11,8 @@ cam_snapshot*.jpg
 # Python 缓存
 __pycache__/
 *.pyc
+
+# C++ 编译产物
+*.exe
+*.o
+*.obj
